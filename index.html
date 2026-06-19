@@ -267,6 +267,7 @@ nav {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 2px;
+  word-break: break-all;
 }
 
 .result-meta { font-size: 12px; color: var(--muted); }
@@ -542,10 +543,8 @@ footer {
 </head>
 <body>
 
-<!-- PARTICLES -->
 <div class="particles" id="particles"></div>
 
-<!-- NAV -->
 <nav>
   <div class="nav-logo">DropLoad</div>
   <ul class="nav-links">
@@ -555,7 +554,6 @@ footer {
   </ul>
 </nav>
 
-<!-- HERO -->
 <section class="hero" id="downloader">
   <div class="hero-orb"></div>
   <div class="hero-tag">Free · Fast · No limits</div>
@@ -602,7 +600,6 @@ footer {
   </div>
 </section>
 
-<!-- HOW IT WORKS -->
 <section class="section" id="how">
   <div class="section-inner">
     <h2 class="how-title">How it works</h2>
@@ -627,7 +624,6 @@ footer {
   </div>
 </section>
 
-<!-- SUPPORTED -->
 <section class="section supported">
   <div class="section-inner">
     <h2 class="how-title">What you can download</h2>
@@ -667,7 +663,6 @@ footer {
   </div>
 </section>
 
-<!-- HELPERS -->
 <section class="section" id="helpers">
   <div class="section-inner">
     <h2 class="how-title">Helper Tips</h2>
@@ -708,6 +703,10 @@ footer {
 <div class="toast" id="toast"></div>
 
 <script>
+// BACKEND CONFIGURATION
+// REPLACE THIS URL with your live deployed Render/Replit web service URL
+const BACKEND_URL = "https://droploader-backend.onrender.com";
+
 // PARTICLES
 const container = document.getElementById('particles');
 for (let i = 0; i < 40; i++) {
@@ -775,7 +774,7 @@ function hideResults() {
   document.getElementById('progressBar').style.display = 'none';
 }
 
-// FILE DETECTION
+// FILE MAP GENERATION
 const fileTypes = {
   mp3: { icon: '🎵', label: 'Audio File' },
   wav: { icon: '🎵', label: 'Audio File' },
@@ -798,37 +797,35 @@ const fileTypes = {
   rar: { icon: '🗜️', label: 'Archive' },
 };
 
-
 function isBlocked(url) {
   const blocked = [
-    'youtube.com','youtu.be','spotify.com',
-    'instagram.com','netflix.com'
+    'youtube.com','youtu.be','spotify.com','instagram.com','netflix.com'
   ];
   return blocked.some(site => url.includes(site));
 }
 
-function convertGoogleDrive(url) {
-  const match = url.match(/\/d\/(.+?)\//);
-  if (!match) return url;
-  return `https://drive.google.com/uc?export=download&id=${match[1]}`;
-}
+let currentValidatedURL = '';
+let currentFileMeta = {};
 
-function convertDropbox(url) {
-  return url.replace('?dl=0', '?dl=1');
-}
-
-
-let currentURL = '';
-
-function detectFile(url) {
+function parseFileDetails(url, contentType) {
   const clean = url.split('?')[0].split('#')[0];
-  const ext = clean.split('.').pop().toLowerCase();
-  const name = clean.split('/').pop() || 'downloaded-file';
-  const info = fileTypes[ext] || { icon: '📁', label: 'File' };
+  let ext = clean.split('.').pop().toLowerCase();
+  let name = clean.split('/').pop() || 'downloaded-file';
+  
+  // If no extension found in string path, guess it from the server response Content-Type
+  if (contentType && contentType !== 'unknown') {
+    if (contentType.includes('audio/')) ext = 'mp3';
+    else if (contentType.includes('video/')) ext = 'mp4';
+    else if (contentType.includes('application/pdf')) ext = 'pdf';
+    else if (contentType.includes('image/')) ext = 'png';
+    else if (contentType.includes('zip') || contentType.includes('archive')) ext = 'zip';
+  }
+  
+  const info = fileTypes[ext] || { icon: '📁', label: 'Verified File' };
   return { name, ext, ...info };
 }
 
-
+// REAL BACKEND HANDLER
 async function handleDownload() {
   const urlInput = document.getElementById('urlInput');
   let url = urlInput.value.trim();
@@ -847,71 +844,75 @@ async function handleDownload() {
   }
 
   if (isBlocked(url)) {
-    showError('This website does not provide direct downloadable files.');
+    showError('This website blocks direct download endpoints. Try direct hosting URLs.');
     return;
   }
-
-  if (url.includes('drive.google.com')) {
-    url = convertGoogleDrive(url);
-  }
-
-  if (url.includes('dropbox.com')) {
-    url = convertDropbox(url);
-  }
-
-  currentURL = url;
 
   const bar = document.getElementById('progressBar');
   const fill = document.getElementById('progressFill');
   bar.style.display = 'block';
-  fill.style.width = '20%';
+  fill.style.width = '30%';
 
   try {
-    const response = await fetch(url, { method: 'HEAD' });
+    // Send URL to your Express backend validator API
+    const response = await fetch(`${BACKEND_URL}/api/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    });
 
     if (!response.ok) {
-      throw new Error();
+      const errData = await response.json();
+      throw new Error(errData.error || 'Server validation failed');
+    }
+
+    const metadata = await response.json();
+    
+    if (!metadata.valid) {
+      throw new Error(metadata.error || 'Link verified but unreachable');
     }
 
     fill.style.width = '100%';
+    currentValidatedURL = metadata.downloadUrl;
+    currentFileMeta = metadata;
 
     setTimeout(() => {
       bar.style.display = 'none';
-      showResult(url);
+      showResult(metadata);
     }, 300);
 
-  } catch {
+  } catch (error) {
     bar.style.display = 'none';
-    showError(
-      'Link is unreachable, blocked by CORS, or is not a direct downloadable file.'
-    );
+    showError(error.message || 'Could not connect to backend helper server. Verify deploy endpoints.');
   }
 }
 
-function showResult
-(url) {
-  const file = detectFile(url);
+function showResult(meta) {
+  const file = parseFileDetails(meta.downloadUrl, meta.contentType);
+  
+  let displaySize = 'Unknown size';
+  if (meta.size && meta.size !== 'unknown') {
+    displaySize = (meta.size / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
   document.getElementById('resultIcon').textContent = file.icon;
   document.getElementById('resultName').textContent = file.name;
-  document.getElementById('resultMeta').textContent = file.label + ' · Ready';
+  document.getElementById('resultMeta').textContent = `${file.label} · ${displaySize} · Verified`;
   document.getElementById('resultBox').classList.add('show');
 }
 
+// ROUTE TRAFFIC VIA BACKEND PROXY
 function triggerDownload() {
-  if (!currentURL) return;
-  const a = document.createElement('a');
-  a.href = currentURL;
-  a.download = detectFile(currentURL).name;
-  a.target = '_blank';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  showToast('Download started! 🔥');
+  if (!currentValidatedURL) return;
+  
+  // Directly point window stream source at your Express endpoint proxy loop
+  window.location.href = `${BACKEND_URL}/api/download?url=${encodeURIComponent(currentValidatedURL)}`;
+  showToast('Download stream starting! 🔥');
 }
 
 function copyLink() {
-  if (!currentURL) return;
-  navigator.clipboard.writeText(currentURL).then(() => showToast('Link copied! ✓'));
+  if (!currentValidatedURL) return;
+  navigator.clipboard.writeText(currentValidatedURL).then(() => showToast('Link copied! ✓'));
 }
 
 function showError(msg) {
@@ -926,7 +927,7 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2500);
 }
 
-// Enter key
+// Input Enter Event Listener
 document.getElementById('urlInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') handleDownload();
 });
